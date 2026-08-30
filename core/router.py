@@ -34,12 +34,17 @@ def _route(platform: str, sender_platform_id: str, sender_username: str, raw_tex
 
     if cmd == "/callout":
         return commands.handle_callout(platform, sender_platform_id, sender_username, arg)
+    if cmd == "/start":
+        from core.cold_invite import handle_telegram_start
+        return handle_telegram_start(platform, sender_platform_id, sender_username, arg)
     if cmd == "/yes":
         return commands.handle_accept(platform, sender_platform_id, sender_username)
     if cmd == "/no":
         return commands.handle_decline(platform, sender_platform_id, sender_username)
     if cmd == "/leaderboard":
         return commands.handle_leaderboard(platform, sender_platform_id, sender_username)
+    if cmd == "/weekly":
+        return commands.handle_weekly_leaderboard(platform, sender_platform_id, sender_username)
     if cmd == "/change_username":
         return commands.handle_change_username(platform, sender_platform_id, sender_username, arg)
     if cmd == "/link":
@@ -52,6 +57,12 @@ def _route(platform: str, sender_platform_id: str, sender_username: str, raw_tex
         return commands.handle_cancel_random(platform, sender_platform_id, sender_username)
     if cmd == "/play_bot":
         return commands.handle_play_bot(platform, sender_platform_id, sender_username)
+    if cmd == "/apply_weekly":
+        return commands.handle_apply_weekly(platform, sender_platform_id, sender_username)
+    if cmd == "/cancel_weekly":
+        return commands.handle_cancel_weekly(platform, sender_platform_id, sender_username)
+    if cmd == "/my_schedule":
+        return commands.handle_my_schedule(platform, sender_platform_id, sender_username)
     if cmd == "/shop":
         return commands.handle_shop(platform, sender_platform_id, sender_username)
     if cmd == "/help":

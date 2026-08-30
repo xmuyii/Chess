@@ -4,23 +4,28 @@ Shared by web/game_server.py (when a human's move ends the game) and
 core/bot_engine.py (when the bot's move ends the game) so results are
 applied identically no matter who made the final move.
 
-Bot games (/play_bot) are practice, not ranked play: NEITHER side gets
-points/coins/win-loss stats from them, not just the bot's own account.
-This is deliberate — /play_bot exists so nobody's stuck waiting for a
-human opponent, not as a way to farm easy leaderboard points against a
-weak bot. If a bot game is detected, this function is a no-op entirely.
+Only games whose origin is in QUALIFYING_GAME_ORIGINS (callout,
+scheduled) ever touch points — /random (casual matchmaking) and
+/play_bot (practice) never do, on the weekly OR all-time leaderboard.
+This is also what makes the weekly "clean slate" leaderboard work with
+zero extra bookkeeping: it just sums this week's transactions, and
+since non-qualifying games never write a scored transaction, the sum
+is automatically scoped correctly — see the weekly_leaderboard view
+in sql/schema.sql.
 """
 from core import db, config
 
 
 def apply_game_result(game: dict) -> None:
+    if game.get("origin") not in config.QUALIFYING_GAME_ORIGINS:
+        return  # casual game (random/bot) — doesn't touch the leaderboard at all
+
     white_id, black_id = game["white_id"], game["black_id"]
-    bot_id = db.get_bot_user_id()
-
-    if bot_id and bot_id in (white_id, black_id):
-        return  # practice game against the bot — doesn't touch the leaderboard at all
-
     status = game["status"]
+
+    if status == "aborted":
+        return  # voided — nobody engaged, so nobody wins/loses/draws
+
     if status == "white_won":
         winner, loser = white_id, black_id
     elif status == "black_won":

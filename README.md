@@ -329,7 +329,136 @@ And re-run the updated `expire_stale_callouts()` function definition
 from `sql/schema.sql` (the `create or replace function` block) to pick
 up the new decline-on-timeout penalty logic.
 
+## The daily league, the daily deadline, and what counts toward the leaderboard
+
+This is a bigger system than a single feature, so here's the whole
+picture in one place.
+
+**Only two kinds of games count toward the leaderboard — weekly or
+all-time**: games from an accepted `/callout`, and games from the
+league (`/apply_weekly`). `/random` (quick matchmaking) and `/play_bot`
+are casual/practice — they never touch points, no matter who wins.
+Enforced by a single `origin` field on every game (`callout` /
+`random` / `bot` / `scheduled`) — see `core/game_results.py`.
+
+**Weekly leaderboard is a genuine "clean slate," not a mutable counter
+that needs resetting**: `/weekly` sums everyone's points from
+`transactions` created since the current week started (Monday, UTC).
+Since non-qualifying games never write a scored transaction, the sum
+is automatically scoped correctly — nothing to reset, nothing to drift.
+`/help` also shows **last week's top 10** every time — a frozen
+snapshot (`last_week_leaderboard` view), so recent winners' names stay
+visible even after the current week's board has moved on.
+
+**The callout faucet**: everyone gets `FREE_CALLOUTS_PER_DAY` (3) free
+callouts per day, non-stackable. **Being called out gives you a
+2-hour shield** (`CALLOUT_COOLDOWN_HOURS`) — nobody else can call you
+out again for 2 hours, so one inactive/asleep player can't get piled
+on by multiple challengers at once. The cooldown is checked *before*
+the faucet is charged, so a blocked callout doesn't cost you a charge.
+
+**Calling someone out puts you both on the same daily-deadline system
+as the league** — accepted `/callout` games and league games share
+identical rules from here on (that's exactly what `QUALIFYING_GAME_ORIGINS`
+represents: `callout` and `scheduled` are treated identically for
+scoring AND for the deadline system below).
+
+**The daily deadline (9 PM UTC)** — every qualifying game gets a
+deadline: today's 9 PM if it was created earlier that day, tomorrow's
+9 PM if created after 9 PM (`core/time_control.py`,
+`get_deadline_for_game`). Once the deadline passes:
+- **Neither player moved** → the game is automatically voided (no
+  winner, no points) — this is self-healing, checked on every `/state`
+  poll, so it fires the moment either player's browser next checks in.
+- **One player moved, the other never showed** → the player who
+  showed up gets a **Claim win** button (not automatic — a deliberate
+  button-press, not a silent resolution). Only the player who actually
+  moved can claim it; the no-show can't claim against themselves.
+- **Both players engaged** → this isn't a "no-show" situation anymore;
+  the existing chess clock (5 min total, 1 min per move) and the
+  general 5-minute-inactivity claim already handle an abandoned
+  mid-game on their own, well before 9 PM would even come into play.
+
+**The league itself is daily, not a single weekly pairing**
+(`core/weekly_league.py`):
+- `/apply_weekly` opts you into the *upcoming* week's pool (next
+  Monday) — nobody is auto-drafted without signing up.
+- Once that week begins, a **new pairing runs every day** for
+  everyone still in the pool, so you get a match most/all days of the
+  week, not just once. Pairing prefers opponents you haven't already
+  played that week, falling back to a repeat only when the pool's too
+  small to avoid it (e.g. exactly 2 people).
+- An odd headcount means one random person draws a bye that specific
+  day — no penalty, back in the pool the next day.
+- `/my_schedule` shows today's match + link. `/cancel_weekly` withdraws
+  you from the pool before the week starts.
+
+**Running it all** — two Railway Cron Job services:
+- `daily-pairings`: Custom Start Command `python -m scripts.run_daily_pairings`,
+  Cron Schedule `0 8 * * *` (8 AM UTC). Sweeps yesterday's fully-abandoned
+  games (nobody ever revisited the link, so the poll-triggered self-heal
+  never got a chance to run) and generates today's pairings. Idempotent —
+  safe if it somehow runs twice the same day.
+- `weekly-reminders`: Custom Start Command `python -m scripts.send_weekly_reminders`,
+  Cron Schedule `0 18 * * *` (6 PM UTC, a few hours before the 9 PM
+  deadline). Nudges anyone with an unfinished match today.
+
+Both need the same `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
+`GAME_TOKEN_SECRET`, and `GAME_WEB_BASE_URL` as your other services.
+
+After pulling this update, run the new parts of `sql/schema.sql`
+against Supabase: the new `users` columns (`callouts_used_today`,
+`callouts_reset_date`, `last_called_out_at`), the `game_origin` type +
+`games.origin` column, `weekly_signups`, `scheduled_matches` (now with
+`match_date`), and the `weekly_leaderboard` / `last_week_leaderboard`
+views.
+
+## Cold-callouts and the username economy
+
+**`/callout <handle> <platform>`** (e.g. `/callout bobsmith telegram`) —
+for reaching someone who's never used this bot at all, on a platform
+where bots genuinely cannot message a stranger (every platform except
+WhatsApp — this is a real platform restriction, not a permissions
+setting). It doesn't message them directly: it creates a stub account
+with an ugly auto-generated username and hands the *challenger* a
+shareable invite link. Only once the target clicks that link and sends
+`/start` does the real callout (with a real 5-minute window) actually
+begin — see `core/cold_invite.py`. Currently only `telegram` is wired
+up (`COLD_INVITE_SUPPORTED_PLATFORMS` in `core/config.py`) since that's
+the only platform with both a real adapter and deep-link support in
+this repo; asking for an unsupported platform gives an honest error,
+not a silent failure. Needs `TELEGRAM_BOT_USERNAME` set in `.env` (your
+bot's `@handle`, shown in the adapter's startup log) to build the
+`t.me/...` links.
+
+**Username changes cost coins after the first one** — everyone's first
+`/change_username` is free (their auto-generated default is never
+pretty), every one after that costs `USERNAME_CHANGE_COST_COINS` (50).
+This is a deliberate coin sink: it gives coins earned from wins
+somewhere to go, and discourages squatting/spam-renaming without
+blocking legitimate rebranding outright.
+
 ## Known limitations / next steps
+
+- **Daily pairing is fully random**, not skill-balanced (no attempt at
+  seeding by rank) — deliberate for v1 simplicity, worth revisiting if
+  you want closer matches.
+- **`/buy`-ing extra callouts isn't built** — `shop_items` supports it
+  structurally, no purchase flow wired up yet.
+- **Discord/Instagram/Messenger cold-callout isn't functional** —
+  `core/cold_invite.py` is built to support them, but this repo has no
+  actual Discord/Instagram/Messenger adapter yet, only Telegram and
+  WhatsApp. Adding one of those platforms means writing its adapter
+  (like `adapters/telegram_adapter.py`) AND its deep-link support in
+  `build_invite_link()` before `/callout <handle> discord` etc. works.
+- **General username discovery** (finding out what someone's app
+  username even is, beyond a friend telling you directly) currently
+  happens via `/leaderboard`/`/weekly` visibility and the notifications
+  sent during callouts/matches — there's no `/search` or player
+  directory. Worth building if this grows past friend groups who
+  already know each other.
+- **Rate limiting on `/callout` is now covered** by the daily faucet
+  and cooldown — the old "spam /callout" limitation below is resolved.
 
 - **Matchmaking queue has a small race window**: `find_and_claim_opponent`
   does a select-then-delete rather than one atomic operation, so two
@@ -356,8 +485,6 @@ up the new decline-on-timeout penalty logic.
   in `core/game_tokens.py`. Harmless to leave for now (still useful as
   an internal opaque game reference), but fine to drop in a later
   migration if you want to tidy up.
-- **Rate limiting / anti-spam**: nothing currently stops someone from
-  spamming `/callout` at a number repeatedly — worth adding a cooldown.
 - **`api/core_api.py`'s `/platforms` endpoint has no de-registration or
   ownership check** — anyone with `CORE_API_KEY` can overwrite any
   platform's webhook registration. Fine while it's just you operating

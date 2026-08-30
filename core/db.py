@@ -179,6 +179,18 @@ def set_username(user_id: str, new_username: str) -> tuple[bool, str]:
     return True, "ok"
 
 
+def record_username_change(user_id: str, cost_coins: int) -> None:
+    """Bumps the change counter and, if this change wasn't free, deducts
+    the coin cost. Call this AFTER set_username() succeeds."""
+    user = get_user_by_id(user_id)
+    update = {"username_changes_used": user["username_changes_used"] + 1}
+    if cost_coins > 0:
+        update["coins"] = user["coins"] - cost_coins
+    supabase.table("users").update(update).eq("id", user_id).execute()
+    if cost_coins > 0:
+        log_transaction(user_id, "shop_purchase", coins_delta=-cost_coins, points_delta=0)
+
+
 def get_user_by_id(user_id: str) -> dict:
     return supabase.table("users").select("*").eq("id", user_id).single().execute().data
 
@@ -256,15 +268,63 @@ def resolve_callout(callout_id: str, status: str) -> None:
 
 
 # ------------------------------------------------------------------
+# Callout faucet (3/day, non-stackable) and target cooldown (2h)
+# ------------------------------------------------------------------
+def check_and_consume_callout(user_id: str) -> tuple[bool, str]:
+    """Rolls the daily counter over if it's a new day, then checks and
+    consumes one charge. Returns (allowed, message_if_denied)."""
+    user = get_user_by_id(user_id)
+    today = datetime.now(timezone.utc).date()
+    reset_date = user["callouts_reset_date"]
+    if isinstance(reset_date, str):
+        reset_date = datetime.fromisoformat(reset_date).date()
+
+    used_today = user["callouts_used_today"]
+    if reset_date < today:
+        used_today = 0  # new day — does NOT carry over unused charges from yesterday
+
+    if used_today >= config.FREE_CALLOUTS_PER_DAY:
+        return False, f"You've used all {config.FREE_CALLOUTS_PER_DAY} of your free callouts today. More available tomorrow."
+
+    supabase.table("users").update(
+        {"callouts_used_today": used_today + 1, "callouts_reset_date": today.isoformat()}
+    ).eq("id", user_id).execute()
+    return True, "ok"
+
+
+def check_callout_cooldown(target_user_id: str) -> tuple[bool, str]:
+    """Whether target_user_id can be called out right now (not called
+    out again within CALLOUT_COOLDOWN_HOURS of their last callout)."""
+    user = get_user_by_id(target_user_id)
+    last_called = user.get("last_called_out_at")
+    if not last_called:
+        return True, "ok"
+    last_called_at = datetime.fromisoformat(last_called)
+    cooldown_ends = last_called_at + timedelta(hours=config.CALLOUT_COOLDOWN_HOURS)
+    now = datetime.now(timezone.utc)
+    if now < cooldown_ends:
+        remaining_minutes = int((cooldown_ends - now).total_seconds() / 60)
+        return False, f"{user['username']} was called out recently — try again in {remaining_minutes} min."
+    return True, "ok"
+
+
+def mark_called_out(target_user_id: str) -> None:
+    supabase.table("users").update({"last_called_out_at": datetime.now(timezone.utc).isoformat()}).eq(
+        "id", target_user_id
+    ).execute()
+
+
+# ------------------------------------------------------------------
 # Games
 # ------------------------------------------------------------------
-def create_game(callout_id: str | None, white_id: str, black_id: str) -> dict:
-    """callout_id is None for games that didn't start from a /callout —
-    /random matchmaking and /play_bot both create games directly."""
+def create_game(callout_id: str | None, white_id: str, black_id: str, origin: str) -> dict:
+    """origin: 'callout' | 'random' | 'bot' | 'scheduled' — determines
+    whether this game counts toward the leaderboard at all, see
+    core/game_results.py and QUALIFYING_GAME_ORIGINS in core/config.py."""
     token = secrets.token_urlsafe(24)
     game = (
         supabase.table("games")
-        .insert({"callout_id": callout_id, "white_id": white_id, "black_id": black_id, "session_token": token})
+        .insert({"callout_id": callout_id, "white_id": white_id, "black_id": black_id, "session_token": token, "origin": origin})
         .execute()
         .data[0]
     )
@@ -372,3 +432,142 @@ def get_bot_user_id() -> str | None:
     on every game finish to decide whether to skip stat updates."""
     user = get_user_by_platform(config.BOT_PLATFORM, config.BOT_PLATFORM_ID)
     return user["id"] if user else None
+
+
+# ------------------------------------------------------------------
+# Pending invites — cold-callout by native platform handle
+# ------------------------------------------------------------------
+def create_pending_invite(target_platform: str, target_handle: str, created_by: str) -> tuple[dict, str]:
+    """Creates a stub account (ugly auto-generated username) and a
+    claim code. Returns (stub_user, claim_code)."""
+    username_hint = "".join(ch for ch in target_handle if ch.isalnum()) + target_platform
+    stub_username = _generate_unique_username(username_hint)
+    stub_user = supabase.table("users").insert({"username": stub_username}).execute().data[0]
+
+    claim_code = "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
+    supabase.table("pending_invites").insert(
+        {
+            "claim_code": claim_code,
+            "user_id": stub_user["id"],
+            "target_platform": target_platform,
+            "target_handle": target_handle,
+            "created_by": created_by,
+        }
+    ).execute()
+    return stub_user, claim_code
+
+
+def get_pending_invite(claim_code: str) -> dict | None:
+    res = supabase.table("pending_invites").select("*").eq("claim_code", claim_code).eq("claimed", False).execute()
+    return res.data[0] if res.data else None
+
+
+def claim_pending_invite(claim_code: str, platform: str, platform_id: str) -> dict | None:
+    """Attaches the claimer's real platform identity to the stub
+    account and marks the invite claimed. Returns the invite row, or
+    None if the code was invalid/already used."""
+    invite = get_pending_invite(claim_code)
+    if not invite:
+        return None
+
+    supabase.table("platform_identities").insert(
+        {"user_id": invite["user_id"], "platform": platform, "platform_id": platform_id, "is_primary": True}
+    ).execute()
+    supabase.table("pending_invites").update(
+        {"claimed": True, "claimed_at": datetime.now(timezone.utc).isoformat()}
+    ).eq("claim_code", claim_code).execute()
+    return invite
+
+
+# ------------------------------------------------------------------
+# Weekly league — opt-in scheduled matches
+# ------------------------------------------------------------------
+def sign_up_for_week(user_id: str, week_start) -> bool:
+    """Returns False if already signed up for that week (no-op, not an error)."""
+    try:
+        supabase.table("weekly_signups").insert({"user_id": user_id, "week_start": str(week_start)}).execute()
+        return True
+    except Exception:
+        return False  # unique constraint hit — already signed up
+
+
+def cancel_signup_for_week(user_id: str, week_start) -> None:
+    supabase.table("weekly_signups").delete().eq("user_id", user_id).eq("week_start", str(week_start)).execute()
+
+
+def get_signups_for_week(week_start) -> list[dict]:
+    return supabase.table("weekly_signups").select("*").eq("week_start", str(week_start)).execute().data
+
+
+def create_scheduled_match(week_start, match_date, player_a_id: str, player_b_id: str | None, game_id: str | None, status: str) -> dict:
+    return (
+        supabase.table("scheduled_matches")
+        .insert(
+            {
+                "week_start": str(week_start),
+                "match_date": str(match_date),
+                "player_a_id": player_a_id,
+                "player_b_id": player_b_id,
+                "game_id": game_id,
+                "status": status,
+            }
+        )
+        .execute()
+        .data[0]
+    )
+
+
+def get_scheduled_matches_for_day(match_date) -> list[dict]:
+    return supabase.table("scheduled_matches").select("*").eq("match_date", str(match_date)).execute().data
+
+
+def get_scheduled_matches_for_week(week_start) -> list[dict]:
+    return supabase.table("scheduled_matches").select("*").eq("week_start", str(week_start)).execute().data
+
+
+def get_past_opponents_this_week(week_start) -> dict[str, set[str]]:
+    """user_id -> set of user_ids they've already been paired against
+    this week (any day), used to avoid rematches when the signup pool
+    is large enough to support it."""
+    matches = get_scheduled_matches_for_week(week_start)
+    opponents: dict[str, set[str]] = {}
+    for m in matches:
+        if m["status"] != "paired" or not m["player_b_id"]:
+            continue
+        a, b = m["player_a_id"], m["player_b_id"]
+        opponents.setdefault(a, set()).add(b)
+        opponents.setdefault(b, set()).add(a)
+    return opponents
+
+
+def get_current_scheduled_match_for_user(user_id: str, match_date) -> dict | None:
+    res = (
+        supabase.table("scheduled_matches")
+        .select("*")
+        .eq("match_date", str(match_date))
+        .or_(f"player_a_id.eq.{user_id},player_b_id.eq.{user_id}")
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
+def get_weekly_leaderboard(limit: int = 10) -> list[dict]:
+    return supabase.table("weekly_leaderboard").select("*").limit(limit).execute().data
+
+
+def get_last_week_leaderboard(limit: int = 10) -> list[dict]:
+    return supabase.table("last_week_leaderboard").select("*").limit(limit).execute().data
+
+
+def get_active_qualifying_games() -> list[dict]:
+    """All still-active callout/scheduled games — used by the daily
+    sweep to catch fully-abandoned games (nobody ever revisited the
+    link, so the usual poll-triggered self-heal never got a chance to run)."""
+    return (
+        supabase.table("games")
+        .select("*")
+        .eq("status", "active")
+        .in_("origin", list(config.QUALIFYING_GAME_ORIGINS))
+        .execute()
+        .data
+    )

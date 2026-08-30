@@ -5,6 +5,37 @@ STARTING_COINS = 100
 DECLINE_PENALTY_POINTS = -10
 CALLOUT_TIMEOUT_SECONDS = 5 * 60  # 5 minutes
 
+# Daily callout faucet: everyone gets this many free callouts per day,
+# non-stackable — unused ones don't roll over to tomorrow.
+FREE_CALLOUTS_PER_DAY = 3
+
+# Once someone is called out, nobody else can call them out again for
+# this long — stops one inactive/asleep player from being spammed by
+# many different challengers at once.
+CALLOUT_COOLDOWN_HOURS = 2
+
+# Game origins that count toward the leaderboard (weekly AND all-time).
+# /random (quick matchmaking) and /play_bot are casual — they never
+# touch points regardless of outcome. See core/game_results.py.
+QUALIFYING_GAME_ORIGINS = {"callout", "scheduled"}
+
+# Username changes: your first one is free, every one after that costs
+# coins — funded by wins, discourages squatting/spam-renaming.
+FREE_USERNAME_CHANGES = 1
+USERNAME_CHANGE_COST_COINS = 50
+
+# Cold-callout by native platform handle (/callout <handle> <platform>)
+# for platforms that can't message a stranger directly — see
+# core/cold_invite.py. Only platforms with a real adapter AND deep-link
+# support belong here; listing one that isn't wired up would silently
+# fail, so this is the source of truth for what's actually supported.
+COLD_INVITE_SUPPORTED_PLATFORMS = {"telegram"}
+# Needed to build t.me/<bot>?start=... links from core/commands.py,
+# which doesn't have direct access to what adapters/telegram_adapter.py
+# discovers dynamically via getMe. Set this once you know your bot's
+# @username (shown in the adapter's startup log).
+TELEGRAM_BOT_USERNAME = os.environ.get("TELEGRAM_BOT_USERNAME", "")
+
 WIN_POINTS = 20
 LOSS_POINTS = -10
 DRAW_POINTS = 2

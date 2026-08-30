@@ -20,6 +20,16 @@ create table if not exists users (
     losses          integer not null default 0,
     draws           integer not null default 0,
     declines        integer not null default 0,
+    -- Daily callout faucet: FREE_CALLOUTS_PER_DAY per day, non-stackable
+    -- (unused ones don't carry over to the next day).
+    callouts_used_today  integer not null default 0,
+    callouts_reset_date  date not null default current_date,
+    -- Cooldown on being TARGETED: once someone calls you out, nobody
+    -- else can call you out again for CALLOUT_COOLDOWN_HOURS.
+    last_called_out_at   timestamptz,
+    -- First /change_username is free; every one after that costs coins
+    -- (deters squatting/spam-renaming while still allowing rebranding).
+    username_changes_used integer not null default 0,
     created_at      timestamptz not null default now(),
     updated_at      timestamptz not null default now()
 );
@@ -62,6 +72,26 @@ create table if not exists platform_webhooks (
     outbound_secret text not null,                -- sent as X-Webhook-Secret so they can verify it's really us
     active          boolean not null default true,
     created_at      timestamptz not null default now()
+);
+
+-- ---------------------------------------------------------------
+-- PENDING INVITES — cold-callout support for platforms that CANNOT
+-- message a stranger (Telegram, Discord, etc. — everything except
+-- WhatsApp's phone-number reach). A stub account is created
+-- immediately with an ugly auto-generated username; the real callout
+-- only activates once the target actually clicks the invite link and
+-- starts the bot, at which point their real platform_identity gets
+-- attached and a normal 5-minute callout window begins.
+-- ---------------------------------------------------------------
+create table if not exists pending_invites (
+    claim_code      text primary key,
+    user_id         uuid not null references users(id) on delete cascade,  -- the stub account
+    target_platform text not null,
+    target_handle   text not null,   -- the native username as typed, for reference/debugging
+    created_by      uuid not null references users(id),                    -- the challenger
+    created_at      timestamptz not null default now(),
+    claimed         boolean not null default false,
+    claimed_at      timestamptz
 );
 
 -- ---------------------------------------------------------------
@@ -109,6 +139,12 @@ create index if not exists idx_callouts_expiry on callouts (status, expires_at);
 -- ---------------------------------------------------------------
 create type game_status as enum ('active', 'white_won', 'black_won', 'draw', 'aborted');
 
+-- What kind of game this was — determines whether it counts toward the
+-- leaderboard at all. Only 'callout' and 'scheduled' games do; 'random'
+-- (quick matchmaking) and 'bot' (/play_bot) are casual/practice and
+-- never touch points, on either the weekly or all-time leaderboard.
+create type game_origin as enum ('callout', 'random', 'bot', 'scheduled');
+
 create table if not exists games (
     id              uuid primary key default uuid_generate_v4(),
     callout_id      uuid references callouts(id),
@@ -119,6 +155,7 @@ create table if not exists games (
     status          game_status not null default 'active',
     winner_id       uuid references users(id),
     session_token   text not null unique,
+    origin          game_origin not null default 'callout',
     -- Chess clock: each side has a total time budget (white/black_time_used_ms
     -- tracks cumulative milliseconds spent across all their completed moves).
     -- turn_started_at resets every time a move is made, marking when the
@@ -132,6 +169,42 @@ create table if not exists games (
 );
 
 create index if not exists idx_games_token on games (session_token);
+create index if not exists idx_games_origin on games (origin);
+
+-- ---------------------------------------------------------------
+-- WEEKLY LEAGUE — opt-in scheduled matches, separate from casual
+-- /callout, /random, and /play_bot games. Players apply to play in the
+-- upcoming week; a pairing run (see core/weekly_league.py, triggered
+-- by a Railway Cron Job) matches everyone who applied and creates the
+-- actual games + sends each player their link.
+-- ---------------------------------------------------------------
+create table if not exists weekly_signups (
+    id              uuid primary key default uuid_generate_v4(),
+    user_id         uuid not null references users(id) on delete cascade,
+    week_start      date not null,   -- the Monday of the week being signed up for
+    created_at      timestamptz not null default now(),
+    unique (user_id, week_start)
+);
+
+create type scheduled_match_status as enum ('paired', 'bye');
+
+create table if not exists scheduled_matches (
+    id              uuid primary key default uuid_generate_v4(),
+    week_start      date not null,
+    match_date      date not null,   -- the specific day this match is for (daily league)
+    player_a_id     uuid not null references users(id),
+    player_b_id     uuid references users(id),  -- null if player_a drew a bye this day
+    game_id         uuid references games(id),  -- null for a bye
+    status          scheduled_match_status not null default 'paired',
+    created_at      timestamptz not null default now()
+    -- Idempotency (nobody paired twice on the same day, whether as
+    -- player_a or player_b) is enforced in application code — see
+    -- core/weekly_league.py — not by a DB constraint, since a simple
+    -- unique index can't express "neither column repeats" cleanly.
+);
+
+create index if not exists idx_scheduled_matches_week on scheduled_matches (week_start);
+create index if not exists idx_scheduled_matches_date on scheduled_matches (match_date);
 
 -- ---------------------------------------------------------------
 -- MOVES
@@ -189,6 +262,44 @@ select
     id, username, points, coins, wins, losses, draws
 from users
 order by points desc, wins desc;
+
+-- ---------------------------------------------------------------
+-- WEEKLY LEADERBOARD — "clean slate" every week, giving new players
+-- a real chance to top it. No reset job needed: this just sums
+-- transactions.points_delta from the current ISO week (Mon-Sun UTC)
+-- onward. It's automatically scoped to only callout/scheduled games
+-- because non-qualifying games (random, bot) never write a scored
+-- transaction in the first place — see core/game_results.py.
+-- ---------------------------------------------------------------
+create or replace view weekly_leaderboard as
+select
+    row_number() over (order by coalesce(sum(t.points_delta), 0) desc) as rank,
+    u.id, u.username, coalesce(sum(t.points_delta), 0)::int as points, u.coins
+from users u
+left join transactions t
+    on t.user_id = u.id
+    and t.created_at >= date_trunc('week', now())
+group by u.id, u.username, u.coins
+order by points desc;
+
+-- ---------------------------------------------------------------
+-- LAST WEEK'S TOP 10 — a frozen snapshot of last week's winners,
+-- shown in /help so players see familiar names reinforced every time
+-- they check the menu. Same "sum this week's qualifying transactions"
+-- approach as weekly_leaderboard, just shifted back one week.
+-- ---------------------------------------------------------------
+create or replace view last_week_leaderboard as
+select
+    row_number() over (order by coalesce(sum(t.points_delta), 0) desc) as rank,
+    u.id, u.username, coalesce(sum(t.points_delta), 0)::int as points
+from users u
+left join transactions t
+    on t.user_id = u.id
+    and t.created_at >= date_trunc('week', now() - interval '1 week')
+    and t.created_at <  date_trunc('week', now())
+group by u.id, u.username
+having coalesce(sum(t.points_delta), 0) > 0
+order by points desc;
 
 -- ---------------------------------------------------------------
 -- Expire stale callouts — schedule via pg_cron every 1 minute

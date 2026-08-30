@@ -35,7 +35,13 @@ from flask import Flask, jsonify, render_template_string, request
 
 from core import db, config, game_tokens
 from core.game_results import apply_game_result
-from core.time_control import check_and_apply_timeout, clock_update_after_move, clock_display_fields
+from core.time_control import (
+    check_and_apply_timeout,
+    clock_update_after_move,
+    clock_display_fields,
+    check_and_void_if_missed_deadline,
+    deadline_noshow_claim_eligible,
+)
 from core.bot_engine import play_bot_move_if_needed
 from api.core_api import bp as core_api_bp
 import os
@@ -330,6 +336,12 @@ def game_state(token):
     # ~3 seconds of the deadline, even if the other side has gone dark.
     game = check_and_apply_timeout(game)
 
+    # Daily deadline check — only for qualifying (callout/scheduled)
+    # games, and only auto-resolves the "neither of us showed up" case.
+    # If exactly one side engaged, this leaves the game alone — that
+    # case needs a manual claim via /claim_forfeit instead.
+    game = check_and_void_if_missed_deadline(game)
+
     my_color = payload["color"]
     my_id = payload["user_id"]
     opp_color = "black" if my_color == "white" else "white"
@@ -426,6 +438,28 @@ def claim_forfeit(token):
     if game["status"] != "active":
         return jsonify({"error": "game not active"}), 400
 
+    # Path 1: daily-deadline no-show claim (callout/scheduled games only,
+    # exactly one side ever moved) — checked first since it's the more
+    # specific rule for these game types.
+    if game.get("origin") in config.QUALIFYING_GAME_ORIGINS:
+        eligible, message = deadline_noshow_claim_eligible(game, payload["color"])
+        if eligible:
+            status = "white_won" if payload["color"] == "white" else "black_won"
+            winner_id = game["white_id"] if payload["color"] == "white" else game["black_id"]
+            db.finish_game(game["id"], status, winner_id)
+            game["status"] = status
+            apply_game_result(game)
+            return jsonify({"status": status, "reason": "deadline_noshow"})
+        # "Neither played" and "wrong claimant" are hard blocks specific
+        # to this rule — return them directly instead of falling through
+        # to the general check below, which would give a confusing or
+        # simply wrong error for these two cases.
+        if "Neither of you played" in message or "the one who can claim" in message:
+            return jsonify({"error": message}), 400
+
+    # Path 2: general inactivity-based claim — applies to every game
+    # type (including /random), and to callout/scheduled games once
+    # both sides have actually engaged (ply >= 2).
     board = chess.Board(game["fen"])
     is_my_turn = (board.turn and payload["color"] == "white") or (not board.turn and payload["color"] == "black")
     if is_my_turn:
