@@ -32,16 +32,21 @@ def verify():
 @app.route("/webhook", methods=["POST"])
 def incoming():
     body = request.get_json(silent=True) or {}
+    print("RAW INCOMING PAYLOAD:", body, flush=True)  # <-- ADD THIS FOR RAILWAY LOGS
+
     try:
         entry = body["entry"][0]["changes"][0]["value"]
         messages = entry.get("messages", [])
     except (KeyError, IndexError):
+        print("PAYLOAD DID NOT CONTAIN MESSAGES (STATUS/READ RECEIPT)", flush=True)
         return jsonify({"status": "ignored"}), 200
 
     for msg in messages:
         sender_number = "+" + msg["from"]
         sender_name = entry.get("contacts", [{}])[0].get("profile", {}).get("name", sender_number)
         text = msg.get("text", {}).get("body", "")
+        
+        print(f"PARSED MESSAGE FROM {sender_name} ({sender_number}): {text}", flush=True) # <-- ADD THIS
         handle_incoming("whatsapp", sender_number, sender_name, text)
 
     return jsonify({"status": "ok"}), 200

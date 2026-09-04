@@ -118,7 +118,11 @@ create table if not exists matchmaking_queue (
 -- ---------------------------------------------------------------
 -- CALLOUTS
 -- ---------------------------------------------------------------
-create type callout_status as enum ('pending', 'accepted', 'declined', 'expired', 'cancelled');
+do $$ begin
+    create type callout_status as enum ('pending', 'accepted', 'declined', 'expired', 'cancelled');
+exception
+    when duplicate_object then null;  -- already exists, safe to skip
+end $$;
 
 create table if not exists callouts (
     id              uuid primary key default uuid_generate_v4(),
@@ -137,13 +141,21 @@ create index if not exists idx_callouts_expiry on callouts (status, expires_at);
 -- ---------------------------------------------------------------
 -- GAMES
 -- ---------------------------------------------------------------
-create type game_status as enum ('active', 'white_won', 'black_won', 'draw', 'aborted');
+do $$ begin
+    create type game_status as enum ('active', 'white_won', 'black_won', 'draw', 'aborted');
+exception
+    when duplicate_object then null;  -- already exists, safe to skip
+end $$;
 
 -- What kind of game this was — determines whether it counts toward the
 -- leaderboard at all. Only 'callout' and 'scheduled' games do; 'random'
 -- (quick matchmaking) and 'bot' (/play_bot) are casual/practice and
 -- never touch points, on either the weekly or all-time leaderboard.
-create type game_origin as enum ('callout', 'random', 'bot', 'scheduled');
+do $$ begin
+    create type game_origin as enum ('callout', 'random', 'bot', 'scheduled');
+exception
+    when duplicate_object then null;  -- already exists, safe to skip
+end $$;
 
 create table if not exists games (
     id              uuid primary key default uuid_generate_v4(),
@@ -186,7 +198,11 @@ create table if not exists weekly_signups (
     unique (user_id, week_start)
 );
 
-create type scheduled_match_status as enum ('paired', 'bye');
+do $$ begin
+    create type scheduled_match_status as enum ('paired', 'bye');
+exception
+    when duplicate_object then null;  -- already exists, safe to skip
+end $$;
 
 create table if not exists scheduled_matches (
     id              uuid primary key default uuid_generate_v4(),
@@ -223,7 +239,11 @@ create table if not exists moves (
 -- ---------------------------------------------------------------
 -- TRANSACTIONS (audit trail)
 -- ---------------------------------------------------------------
-create type txn_type as enum ('decline_penalty', 'win_reward', 'loss_penalty', 'shop_purchase', 'signup_bonus', 'admin_adjust');
+do $$ begin
+    create type txn_type as enum ('decline_penalty', 'win_reward', 'loss_penalty', 'shop_purchase', 'signup_bonus', 'admin_adjust');
+exception
+    when duplicate_object then null;  -- already exists, safe to skip
+end $$;
 
 create table if not exists transactions (
     id              bigserial primary key,
