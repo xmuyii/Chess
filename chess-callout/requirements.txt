@@ -1,0 +1,6 @@
+flask
+itsdangerous
+python-dotenv
+requests
+supabase
+python-chess
