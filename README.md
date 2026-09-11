@@ -459,7 +459,7 @@ specifically so this kind of addition doesn't require touching core logic.
    docker run --detach --publish=3000:3000 --name=gowa --restart=always \
      --volume=$(docker volume create --name=gowa):/app/storages \
      aldinokemal2104/go-whatsapp-web-multidevice rest \
-     --webhook-secret=some-secret-you-choose
+     --webhook-secret=chesscallout2030
    ```
 2. **Open `http://localhost:3000`**, scan the QR code with the WhatsApp
    you want to use as the bot (Linked Devices in the WhatsApp app).

@@ -1,0 +1,1 @@
+web: python -m adapters.gowa_adapter
