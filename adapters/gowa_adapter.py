@@ -61,6 +61,43 @@ def webhook():
     handle_incoming("gowa", sender_jid, display_name, text)
     return jsonify({"status": "ok"}), 200
 
+import os
+import requests
+
+GOWA_API_URL = os.environ.get("GOWA_API_URL", "http://localhost:3000")
+GOWA_API_KEY = os.environ.get("GOWA_API_KEY", "")  # Basic auth or API key if configured in GOWA
+
+def send_whatsapp_message(to_jid: str, text: str) -> bool:
+    """
+    Sends an outbound message back via GOWA REST API.
+    """
+    # Strip WhatsApp suffix to extract raw phone number or group ID
+    phone_number = to_jid.replace("@s.whatsapp.net", "").replace("@g.us", "")
+    
+    url = f"{GOWA_API_URL.rstrip('/')}/send/message"
+    
+    headers = {
+        "Content-Type": "application/json"
+    }
+    
+    # If GOWA uses basic auth / token, attach here
+    if GOWA_API_KEY:
+        headers["Authorization"] = f"Bearer {GOWA_API_KEY}"
+
+    payload = {
+        "phone": phone_number,
+        "message": text
+    }
+
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        response.raise_for_status()
+        print(f"[GOWA Outbound] Message successfully sent to {phone_number}")
+        return True
+    except Exception as e:
+        print(f"[GOWA Outbound Error] Failed to send message to {phone_number}: {e}")
+        return False
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8001))

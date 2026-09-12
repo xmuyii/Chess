@@ -8,9 +8,15 @@ care where the replies end up.
 import traceback
 
 from core import commands, senders
+from adapters.gowa_adapter import send_whatsapp_message
 
 
 def handle_incoming(platform: str, sender_platform_id: str, sender_username: str, raw_text: str) -> None:
+    reply_text = f"Hello {sender_username}, received your message: '{raw_text}'"
+    
+    if platform == "gowa":
+        send_whatsapp_message(sender_platform_id, reply_text)
+
     for out in _route(platform, sender_platform_id, sender_username, raw_text):
         try:
             senders.send(out.platform, out.to_platform_id, out.text)
