@@ -114,10 +114,34 @@ def get_user_by_username(username: str) -> dict | None:
     return res.data[0] if res.data else None
 
 
+def find_existing_player_by_raw_id(user_id: str) -> dict | None:
+    """Non-throwing existence check (unlike get_user_by_id, which
+    assumes the row exists) — used for cross-game identity recognition,
+    where 'not found' is the common, expected outcome."""
+    res = supabase.table("players").select("*").eq("user_id", user_id).execute()
+    return res.data[0] if res.data else None
+
+
 def get_or_create_user(platform: str, platform_id: str, display_name_hint: str) -> dict:
     existing = get_user_by_platform(platform, platform_id)
     if existing:
         return existing
+
+    # Telegram is a special case: the other game(s) sharing this
+    # database are Telegram-based, and their players.user_id IS the
+    # raw Telegram chat ID directly — confirmed against real sample
+    # data, no transformation or prefix involved. So before creating a
+    # brand-new account, check whether this exact chat ID already
+    # belongs to an existing player from the other game, and link to
+    # THAT account instead of creating a duplicate identity for the
+    # same person with an ugly auto-generated username.
+    if platform == "telegram":
+        existing_player = find_existing_player_by_raw_id(platform_id)
+        if existing_player:
+            supabase.table("chess_platform_identities").insert(
+                {"user_id": existing_player["user_id"], "platform": platform, "platform_id": platform_id, "is_primary": True}
+            ).execute()
+            return existing_player
 
     username = _generate_unique_username(display_name_hint)
     new_player = _create_new_player_row(username)

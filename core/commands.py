@@ -49,26 +49,29 @@ def handle_callout(platform: str, sender_platform_id: str, sender_username: str,
     if not target:
         return [OutMessage(platform, sender_platform_id, "Usage: /callout +2345678901  or  /callout <username>  or  /callout <handle> <platform>")]
 
-    # Cold-callout by native handle: "/callout someone telegram" — two
-    # tokens. A real username can never contain a space (see
-    # set_username's validation), so any two-token target is
-    # unambiguously this syntax, never a single-word username lookup.
-    # This is genuinely different from every other callout path (the
-    # target has never used this bot at all) — delegated to a dedicated
-    # module, see core/cold_invite.py for why it can't just message them.
-    parts = target.split()
-    if len(parts) == 2:
-        from core.cold_invite import handle_cold_callout
-        return handle_cold_callout(platform, sender_platform_id, sender_username, parts[0], parts[1])
-
     if target.startswith("+"):
         # WhatsApp-specific: reach someone by phone, creating their account if needed.
         opponent = db.get_user_by_platform("whatsapp", target)
         if opponent is None:
             opponent = db.get_or_create_user("whatsapp", target, target)
     else:
+        # Try the FULL target string as a username first. This matters
+        # now that usernames can come from the shared players table
+        # (the other game's existing usernames), which weren't created
+        # under chess's own validation rules and can contain spaces or
+        # emoji (e.g. "Starpath 🧿🪬") — the old "usernames never have
+        # spaces" assumption only held for chess-native accounts.
         opponent = db.get_user_by_username(target)
+
         if opponent is None:
+            # Not an existing username — check for cold-callout-by-handle
+            # syntax ("/callout someone telegram", exactly two tokens)
+            # before giving up. This only makes sense as a fallback now,
+            # since a legitimate multi-word username must be checked first.
+            parts = target.split()
+            if len(parts) == 2:
+                from core.cold_invite import handle_cold_callout
+                return handle_cold_callout(platform, sender_platform_id, sender_username, parts[0], parts[1])
             return [OutMessage(platform, sender_platform_id, f"No player found with username '{target}'.")]
 
     if opponent["user_id"] == challenger["user_id"]:

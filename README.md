@@ -456,18 +456,34 @@ one database now, not two kept in sync.
   game's own `wins`/`gold`/`credits`/etc. columns — a real risk given
   how many similarly-named columns exist on the same shared table.
 
-**Still open, worth deciding before this goes live**: what happens if
-someone signs up for the other game FIRST and plays chess SECOND —
-does their existing `players` row get correctly picked up (yes, as
-long as they message the chess bot from a platform already linked via
-`chess_platform_identities` — but if they've never linked any platform
-to chess before, chess will currently create a **second, separate**
-`players` row for the same person, since there's no cross-game
-identity-linking step yet). If your other game already has its own
-login/auth system with a stable `user_id` you could hand to chess
-directly (e.g. via a shared login flow or a linking command), that's
-the next piece worth building — right now chess only knows someone by
-which WhatsApp/Telegram/GOWA identity messaged it.
+**Resolved: automatic Telegram cross-game recognition.** Your other
+game's `players.user_id` is confirmed to be the raw Telegram chat ID
+directly (no prefix, no transformation — verified against real sample
+data). So `get_or_create_user()` now checks, for Telegram specifically,
+whether an existing `players` row already has that exact chat ID
+*before* creating a new account — if it does, chess links to that
+real, existing player (their real username, their real stats) instead
+of creating a duplicate. Tested directly: an existing other-game player
+messaging chess for the first time gets correctly linked with zero
+duplication and no signup bonus (that's only for genuinely new
+accounts); a truly new Telegram user still goes through the normal
+creation path; WhatsApp is unaffected (no equivalent convention exists
+there yet, since your other game has no WhatsApp players to match
+against).
+
+**A real bug this surfaced, now fixed**: existing usernames from your
+other game (e.g. `"Starpath 🧿🪬"`) weren't created under chess's own
+validation rules and can contain spaces or emoji — chess's own
+`/change_username` rules don't allow that, but it has to *handle
+looking up* names that already exist and don't follow those rules.
+`/callout` now tries the full target string as a username **first**,
+and only falls back to the two-token cold-callout-by-handle syntax if
+that lookup fails — previously, any two-word target was assumed to be
+cold-callout syntax, which would have made a legitimate multi-word
+username impossible to `/callout` at all. Tested all three paths:
+multi-word/emoji legacy usernames resolve correctly, genuine
+cold-callout syntax (`/callout someone telegram`) still works, and
+truly unknown single-word names still fail with a clear error.
 
 ## GOWA — unofficial WhatsApp integration (alternative to the official adapter)
 

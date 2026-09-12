@@ -36,6 +36,11 @@ COLD_INVITE_SUPPORTED_PLATFORMS = {"telegram"}
 # @username (shown in the adapter's startup log).
 TELEGRAM_BOT_USERNAME = os.environ.get("TELEGRAM_BOT_USERNAME", "")
 
+# Needed only for core/whatsapp_profile.py (scheduled profile picture
+# changes via the official WhatsApp Cloud API). Find this in your Meta
+# developer console URL, e.g. developers.facebook.com/apps/1625953319127009
+META_APP_ID = os.environ.get("META_APP_ID", "")
+
 # GOWA (go-whatsapp-web-multidevice) — an UNOFFICIAL WhatsApp integration,
 # alternative to the official Cloud API adapter. See README for the real
 # tradeoffs (ToS violation, ban risk) before using this in production.
