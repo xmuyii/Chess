@@ -413,6 +413,62 @@ against Supabase: the new `users` columns (`callouts_used_today`,
 `match_date`), and the `weekly_leaderboard` / `last_week_leaderboard`
 views.
 
+## Shared database — integrated with your other game's Supabase project
+
+**This is a real architecture change, not an add-on.** Chess-callout no
+longer owns its own `users` table. Every chess table now references
+`players.user_id` (text) directly — the same identity, and the same
+`players.username`, used by your other game(s). Chess-specific stats
+(`chess_coins`, `chess_all_time_points`, `chess_wins`, etc.) live as
+new columns directly on `players`, matching the `fusion_*`/`trivia_*`
+convention already established there. See
+`sql/players_integration_migration.sql` for the schema side of this.
+
+**To point this repo at the shared project**: set `SUPABASE_URL` and
+`SUPABASE_SERVICE_ROLE_KEY` in `.env` (and on every Railway service) to
+your OTHER game's Supabase project, not a separate one. There's only
+one database now, not two kept in sync.
+
+**What changed in the code, if you're diffing against an older copy**:
+- `core/db.py` was fully rewritten — every function now reads/writes
+  `players` + `chess_`-prefixed tables instead of a standalone `users`
+  table.
+- Every place that used to do `user["id"]` now does `user["user_id"]`
+  — `players.id` (an internal bigint used by the other game) is never
+  touched by chess-callout at all.
+- `user["coins"]` → `user["chess_coins"]`, `user["points"]` →
+  `user["chess_all_time_points"]`, and the win/loss/draw/decline
+  counters are all `chess_`-prefixed now.
+- **New-player creation explicitly supplies 18 columns** that belong
+  to the other game(s) — `all_time_points`, `weekly_points`,
+  `total_words`, `bitcoin`, `xp`, `war_points`, `wins`, `losses`,
+  `kings_captured`, `times_captured`, `combo_count`, `credits`, `gold`,
+  `energy`, `total_power`, `teleport_charges`, `base_shielded`,
+  `login_streak` — all zeroed out. This was deliberate: rather than
+  assume those columns have database-level defaults (which I couldn't
+  verify), chess-callout supplies safe values for every one of them on
+  insert, so a new chess-originated player doesn't fail a NOT NULL
+  constraint regardless of whether defaults exist. I tested this
+  directly — simulated a strict not-null check against exactly this
+  column list and confirmed every one is present in the insert payload.
+- I also tested `adjust_user()` specifically to confirm it writes to
+  `chess_wins`/`chess_coins`/etc. and **never** touches the other
+  game's own `wins`/`gold`/`credits`/etc. columns — a real risk given
+  how many similarly-named columns exist on the same shared table.
+
+**Still open, worth deciding before this goes live**: what happens if
+someone signs up for the other game FIRST and plays chess SECOND —
+does their existing `players` row get correctly picked up (yes, as
+long as they message the chess bot from a platform already linked via
+`chess_platform_identities` — but if they've never linked any platform
+to chess before, chess will currently create a **second, separate**
+`players` row for the same person, since there's no cross-game
+identity-linking step yet). If your other game already has its own
+login/auth system with a stable `user_id` you could hand to chess
+directly (e.g. via a shared login flow or a linking command), that's
+the next piece worth building — right now chess only knows someone by
+which WhatsApp/Telegram/GOWA identity messaged it.
+
 ## GOWA — unofficial WhatsApp integration (alternative to the official adapter)
 
 **Read this before using it.** GOWA's own README says, verbatim: *"This
@@ -459,7 +515,7 @@ specifically so this kind of addition doesn't require touching core logic.
    docker run --detach --publish=3000:3000 --name=gowa --restart=always \
      --volume=$(docker volume create --name=gowa):/app/storages \
      aldinokemal2104/go-whatsapp-web-multidevice rest \
-     --webhook-secret=chesscallout2030
+     --webhook-secret=some-secret-you-choose
    ```
 2. **Open `http://localhost:3000`**, scan the QR code with the WhatsApp
    you want to use as the bot (Linked Devices in the WhatsApp app).

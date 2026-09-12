@@ -30,11 +30,11 @@ def handle_cold_callout(platform: str, sender_platform_id: str, sender_username:
         supported = ", ".join(sorted(config.COLD_INVITE_SUPPORTED_PLATFORMS)) or "(none configured yet)"
         return [OutMessage(platform, sender_platform_id, f"Cold-callout by handle isn't set up for '{target_platform}' yet. Currently supported: {supported}.")]
 
-    faucet_ok, faucet_message = db.check_and_consume_callout(challenger["id"])
+    faucet_ok, faucet_message = db.check_and_consume_callout(challenger["user_id"])
     if not faucet_ok:
         return [OutMessage(platform, sender_platform_id, faucet_message)]
 
-    stub_user, claim_code = db.create_pending_invite(target_platform, target_handle, challenger["id"])
+    stub_user, claim_code = db.create_pending_invite(target_platform, target_handle, challenger["user_id"])
     link = build_invite_link(target_platform, claim_code)
 
     if not link:
@@ -69,12 +69,12 @@ def handle_telegram_start(platform: str, sender_platform_id: str, sender_usernam
     # auto-generated one and their real display name is available and free —
     # nice-to-have, not required, so failures here are silently ignored.
     if sender_username and sender_username != stub_user["username"]:
-        db.set_username(stub_user["id"], sender_username)  # best-effort; ignore failure (name taken etc.)
+        db.set_username(stub_user["user_id"], sender_username)  # best-effort; ignore failure (name taken etc.)
 
-    db.create_callout(invite["created_by"], stub_user["id"])
-    db.mark_called_out(stub_user["id"])
+    db.create_callout(invite["created_by"], stub_user["user_id"])
+    db.mark_called_out(stub_user["user_id"])
 
-    notify_challenger = _deliver_to_user(challenger["id"], f"{stub_user['username']} just joined — your callout to them is now active, they have 5 minutes to respond!")
+    notify_challenger = _deliver_to_user(challenger["user_id"], f"{stub_user['username']} just joined — your callout to them is now active, they have 5 minutes to respond!")
     if notify_challenger:
         from core.senders import send
         send(notify_challenger.platform, notify_challenger.to_platform_id, notify_challenger.text)

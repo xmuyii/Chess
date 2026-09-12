@@ -408,7 +408,7 @@ def make_move(token):
         status = "draw"
 
     clock_update = clock_update_after_move(game, mover_is_white)
-    db.supabase.table("games").update(
+    db.supabase.table("chess_games").update(
         {"fen": new_fen, "updated_at": datetime.now(timezone.utc).isoformat(), **clock_update}
     ).eq("id", game["id"]).execute()
 

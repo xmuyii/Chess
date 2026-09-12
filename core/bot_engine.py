@@ -59,7 +59,7 @@ def play_bot_move_if_needed(game_id: str) -> dict | None:
     # this, the human's move-time countdown would start from whenever
     # their opponent's last move was, not from when the bot actually replied.
     clock_update = clock_update_after_move(game, mover_is_white=bot_is_white)
-    db.supabase.table("games").update(
+    db.supabase.table("chess_games").update(
         {"fen": new_fen, "updated_at": datetime.now(timezone.utc).isoformat(), **clock_update}
     ).eq("id", game["id"]).execute()
 
