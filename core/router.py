@@ -9,6 +9,7 @@ import traceback
 
 from core import commands, senders
 from adapters.gowa_adapter import send_whatsapp_message
+from services.gowa_client import send_whatsapp_message
 
 
 def handle_incoming(platform: str, sender_platform_id: str, sender_username: str, raw_text: str) -> None:
