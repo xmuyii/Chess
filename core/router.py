@@ -8,6 +8,8 @@ from core import commands, senders
 
 
 def handle_incoming(platform: str, sender_platform_id: str, sender_username: str, raw_text: str) -> None:
+    if platform == "gowa":
+        sender_platform_id = re.sub(r"\D", "", sender_platform_id.split("@")[0])
     for out in _route(platform, sender_platform_id, sender_username, raw_text):
         try:
             senders.send(out.platform, out.to_platform_id, out.text)
