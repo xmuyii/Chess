@@ -3,6 +3,7 @@ Parses raw text into a command, runs it, and delivers every resulting
 OutMessage through core.senders — regardless of which platform sent
 the reply belongs to.
 """
+import re
 import traceback
 from core import commands, senders
 
