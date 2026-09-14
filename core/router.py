@@ -8,7 +8,6 @@ care where the replies end up.
 import traceback
 
 from core import commands, senders
-from adapters.gowa_adapter import send_whatsapp_message
 from services.gowa_client import send_whatsapp_message
 
 
