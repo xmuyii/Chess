@@ -1,30 +1,17 @@
 """
 Parses raw text into a command, runs it, and delivers every resulting
 OutMessage through core.senders — regardless of which platform sent
-the reply belongs to. This is what makes cross-platform callouts work:
-an adapter just calls handle_incoming(); it doesn't need to know or
-care where the replies end up.
+the reply belongs to.
 """
 import traceback
-
 from core import commands, senders
-from services.gowa_client import send_whatsapp_message
 
 
 def handle_incoming(platform: str, sender_platform_id: str, sender_username: str, raw_text: str) -> None:
-    reply_text = f"Hello {sender_username}, received your message: '{raw_text}'"
-    
-    if platform == "gowa":
-        send_whatsapp_message(sender_platform_id, reply_text)
-
     for out in _route(platform, sender_platform_id, sender_username, raw_text):
         try:
             senders.send(out.platform, out.to_platform_id, out.text)
         except Exception:
-            # One platform being unreachable (e.g. WhatsApp creds not
-            # configured yet) shouldn't stop the rest of the replies in
-            # this batch from going out, and shouldn't look like the
-            # whole command crashed — just log it and keep going.
             print(f"WARNING: failed to deliver a message to {out.platform}:{out.to_platform_id}")
             traceback.print_exc()
 

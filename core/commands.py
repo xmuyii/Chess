@@ -42,6 +42,11 @@ def _deliver_to_user(user_id: str, text: str) -> OutMessage | None:
 # ------------------------------------------------------------------
 # /callout <+phone or username>  or  /callout <native_handle> <platform>
 # ------------------------------------------------------------------
+import re
+
+# ------------------------------------------------------------------
+# /callout <+phone or username>  or  /callout <native_handle> <platform>
+# ------------------------------------------------------------------
 def handle_callout(platform: str, sender_platform_id: str, sender_username: str, target: str) -> list[OutMessage]:
     challenger = db.get_or_create_user(platform, sender_platform_id, sender_username)
     target = target.strip()
@@ -49,25 +54,19 @@ def handle_callout(platform: str, sender_platform_id: str, sender_username: str,
     if not target:
         return [OutMessage(platform, sender_platform_id, "Usage: /callout +2345678901  or  /callout <username>  or  /callout <handle> <platform>")]
 
-    if target.startswith("+"):
-        # WhatsApp-specific: reach someone by phone, creating their account if needed.
-        opponent = db.get_user_by_platform("whatsapp", target)
+    if target.startswith("+") or target.isdigit():
+        # Sanitize phone to pure numeric string (e.g. "+2348100381127" -> "2348100381127")
+        clean_phone = re.sub(r"\D", "", target)
+        
+        # Match platform key registered in senders ("gowa")
+        opponent = db.get_user_by_platform("gowa", clean_phone)
         if opponent is None:
-            opponent = db.get_or_create_user("whatsapp", target, target)
+            opponent = db.get_or_create_user("gowa", clean_phone, f"+{clean_phone}")
     else:
-        # Try the FULL target string as a username first. This matters
-        # now that usernames can come from the shared players table
-        # (the other game's existing usernames), which weren't created
-        # under chess's own validation rules and can contain spaces or
-        # emoji (e.g. "Starpath 🧿🪬") — the old "usernames never have
-        # spaces" assumption only held for chess-native accounts.
+        # Try the FULL target string as a username first
         opponent = db.get_user_by_username(target)
 
         if opponent is None:
-            # Not an existing username — check for cold-callout-by-handle
-            # syntax ("/callout someone telegram", exactly two tokens)
-            # before giving up. This only makes sense as a fallback now,
-            # since a legitimate multi-word username must be checked first.
             parts = target.split()
             if len(parts) == 2:
                 from core.cold_invite import handle_cold_callout
@@ -80,9 +79,6 @@ def handle_callout(platform: str, sender_platform_id: str, sender_username: str,
     if db.get_pending_callout_for(opponent["user_id"]):
         return [OutMessage(platform, sender_platform_id, f"{opponent['username']} already has a pending callout. Try again later.")]
 
-    # Check the target's cooldown BEFORE consuming a faucet charge — a
-    # callout that can't happen anyway shouldn't cost you one of your
-    # limited daily callouts.
     cooldown_ok, cooldown_message = db.check_callout_cooldown(opponent["user_id"])
     if not cooldown_ok:
         return [OutMessage(platform, sender_platform_id, cooldown_message)]
@@ -105,7 +101,6 @@ def handle_callout(platform: str, sender_platform_id: str, sender_username: str,
     else:
         out.append(OutMessage(platform, sender_platform_id, f"(Note: {opponent['username']} has no reachable platform on file.)"))
     return out
-
 
 # ------------------------------------------------------------------
 # /yes
